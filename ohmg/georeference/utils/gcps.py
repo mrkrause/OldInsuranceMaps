@@ -68,24 +68,40 @@ def build_helmert_matrices(gcp_list: list[gdal.GCP]) -> tuple[np.array, np.array
     return np.array(sources, dtype=float), np.array(targets, dtype=float)
 
 
-def calculate_helmert_rmse(gcp_list: list[gdal.GCP]) -> float:
+def calculate_helmert_rmse(gcp_list: list[gdal.GCP]):
+    """
+    Calculates the pointwise RMSE and coordinate pairings for a
+    Helmert transform of the GCPs in gcp_list. This corrects for the DOF 
+    absorbed by the Helmert transform. When there are fewer than 3 GCPs,
+    the fit is exact and RMSE is meaningless, so we return None instead of
+    a potentially misleading zero.
+
+    Returns:
+        rmse: the root mean square error of the points under the transform.
+        pred_coords: the predicted coordinates of the GCPs under the transformation
+        lines: error vectors as a list of (predicted_coord, target_coord) tuples
+    """
+
+    N = len(gcp_list)
     sources, targets = build_helmert_matrices(gcp_list)
 
     x, *_ = np.linalg.lstsq(sources, targets, rcond=None)
-
     predictions = sources @ x
-    rmse = np.sqrt(np.mean((targets - predictions) ** 2))
 
     def flat_list_to_pairs(flat_list: list) -> list[tuple[object, object]]:
         iterator = iter(flat_list)
         return list(zip(iterator, iterator))
-
     pred_coords = flat_list_to_pairs(predictions.tolist())
     target_coords = flat_list_to_pairs(targets.tolist())
-
     lines = list(zip(pred_coords, target_coords))
 
-    return round(rmse, 3), pred_coords, lines
+    # Can't calculate meaningful RMSE for a Helmert transformation with N < 3.
+    if N < 3:
+        return None, pred_coords, lines
+
+    resid_distance = np.linalg.norm((targets - predictions).reshape(-1, 2), axis=1)
+    rmse = round(float(np.sqrt(np.sum(resid_distance**2) / (N - 2))), 3)
+    return rmse, pred_coords, lines
 
 
 def get_helmert_params(gcp_list: list[gdal.GCP]) -> HelmertParams:
@@ -155,23 +171,36 @@ def build_affine_matrices(gcp_list: list[gdal.GCP]) -> tuple[np.array, np.array]
 
 def calculate_affine_rmse(gcp_list: list[gdal.GCP]):
     """
-    Calculates the overall RMSE and coordinate pairings
-    using a first-degree Polynomial (Affine) transformation.
+    Calculates the pointwise RMSE and coordinate pairings for a
+    first-degree Polynomial (Affine) transform of the GCPs in gcp_list.
+
+    This corrects for the 3 parameters used for each axis of the affine
+    transform. Returns None if there are fewer than 4 GCPs since in-sample
+    RMSE is then meaningless.
+
+    Returns:
+        rmse: the root mean square error of the points under the transform.
+        pred_coords: the predicted coordinates of the GCPs under the transformation
+        lines: error vectors as a list of (predicted_coord, target_coord) tuples
     """
 
+    N = len(gcp_list)
     sources, targets = build_affine_matrices(gcp_list)
 
     x, *_ = np.linalg.lstsq(sources, targets, rcond=None)
 
     predictions = sources @ x
-    rmse = np.sqrt(np.mean((targets - predictions) ** 2))
-
     pred_coords = [tuple(coord) for coord in predictions.tolist()]
     target_coords = [tuple(coord) for coord in targets.tolist()]
-
     lines = list(zip(pred_coords, target_coords))
 
-    return round(rmse, 3), pred_coords, lines
+    # Can't calculate meaningful RMSE for an affine transformation with N < 4.
+    if N < 4:
+        return None, pred_coords, lines
+
+    resid_distance = np.linalg.norm(targets - predictions, axis=1)
+    rmse = round(float(np.sqrt(np.sum(resid_distance**2) / (N - 3))), 3)
+    return rmse, pred_coords, lines
 
 
 def calculate_affine_distortion(gcp_list: list) -> tuple[float, float]:
